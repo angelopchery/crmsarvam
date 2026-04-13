@@ -1,0 +1,7 @@
+# Alembic Migrations
+
+This directory contains database migration files.
+
+Run `alembic revision --autogenerate -m "description"` to create a new migration.
+Run `alembic upgrade head` to apply all migrations.
+Run `alembic downgrade -1` to revert the last migration.
