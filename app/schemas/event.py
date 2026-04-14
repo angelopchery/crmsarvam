@@ -70,9 +70,21 @@ class TranscriptionResponse(BaseModel):
     transcript_text: str
     language_code: str
     confidence: Optional[float] = None
+    status: str = "pending"
+    error_message: Optional[str] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TranscriptionStatusResponse(BaseModel):
+    """Schema for transcription status polling response."""
+
+    status: str
+    error: Optional[str] = None
+    transcription_id: Optional[int] = None
+    updated_at: Optional[datetime] = None
 
 
 class FollowUpResponse(BaseModel):

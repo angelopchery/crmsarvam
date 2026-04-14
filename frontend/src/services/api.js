@@ -83,6 +83,8 @@ export const eventsAPI = {
   update: (id, data) => api.put(`/api/events/${id}`, data),
   delete: (id) => api.delete(`/api/events/${id}`),
   getMedia: (eventId) => api.get(`/api/events/${eventId}/media`),
+  getTranscriptionStatus: (eventId) => api.get(`/api/events/${eventId}/transcription-status`),
+  getTranscription: (eventId) => api.get(`/api/transcriptions/${eventId}`),
   uploadMedia: (eventId, formData) => api.post(`/api/events/${eventId}/media`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }),

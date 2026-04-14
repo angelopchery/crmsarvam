@@ -100,7 +100,10 @@ class EventService:
                     "transcript_text": t.transcript_text,
                     "language_code": t.language_code,
                     "confidence": t.confidence,
+                    "status": getattr(t, "status", "completed"),
+                    "error_message": getattr(t, "error_message", None),
                     "created_at": t.created_at,
+                    "updated_at": getattr(t, "updated_at", t.created_at),
                 }
                 for t in event.transcriptions
             ],

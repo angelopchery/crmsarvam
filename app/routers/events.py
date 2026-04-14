@@ -20,7 +20,10 @@ from app.schemas.event import (
     EventWithDetails,
     EventListResponse,
     EventMediaResponse,
+    TranscriptionStatusResponse,
 )
+from sqlalchemy import select
+from app.models.transcription import Transcription, TranscriptionStatus
 from app.schemas.user import UserResponse
 from app.services.event_service import EventService, EventMediaService
 from app.providers.media_processor import MediaProcessor
@@ -77,6 +80,32 @@ async def get_event(
         )
 
     return event
+
+
+@router.get("/{event_id}/transcription-status", response_model=TranscriptionStatusResponse)
+async def get_transcription_status(
+    event_id: int,
+    current_user: Annotated[UserResponse, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+):
+    """Return the most recent transcription status for an event (for UI polling)."""
+    result = await db.execute(
+        select(Transcription)
+        .where(Transcription.event_id == event_id)
+        .order_by(Transcription.created_at.desc())
+        .limit(1)
+    )
+    transcription = result.scalar_one_or_none()
+
+    if not transcription:
+        return TranscriptionStatusResponse(status="none", error=None)
+
+    return TranscriptionStatusResponse(
+        status=transcription.status,
+        error=transcription.error_message,
+        transcription_id=transcription.id,
+        updated_at=transcription.updated_at,
+    )
 
 
 @router.post("", response_model=EventResponse, status_code=status.HTTP_201_CREATED)
@@ -233,10 +262,28 @@ async def upload_event_media(
             file_size=file_size,
         )
 
-        # Trigger transcription for audio/video files
+        # For audio/video: create pending transcription row and trigger Celery task.
         if file_type in ("audio", "video"):
-            logger.info(f"Scheduling transcription for media_id={media.id}")
-            process_transcription.delay(media.id)
+            logger.info("🔥 Creating transcription record...")
+            transcription = Transcription(
+                event_id=event_id,
+                transcript_text="",
+                language_code="unknown",
+                confidence=0.0,
+                status=TranscriptionStatus.PENDING.value,
+            )
+            db.add(transcription)
+            await db.commit()
+            await db.refresh(transcription)
+
+            logger.info(f"🚀 TRIGGERING TRANSCRIPTION TASK id={transcription.id}")
+            logger.info(f"🔥 Sending task to Celery for transcription_id={transcription.id}")
+            process_transcription.delay(
+                transcription.id,
+                str(file_path),
+                file_type,
+            )
+            logger.info(f"🚀 Celery task triggered for transcription_id={transcription.id}")
 
         return media
 

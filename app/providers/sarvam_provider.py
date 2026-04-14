@@ -1,10 +1,14 @@
 """
 Sarvam AI provider for speech-to-text transcription.
+
+Endpoint: POST https://api.sarvam.ai/speech-to-text
+Auth:     header `api-subscription-key`
+Body:     multipart/form-data with `file` + `model` + `mode`
 """
 import logging
 import os
-from typing import Optional, Dict, Any
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -12,31 +16,26 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 logger = logging.getLogger(__name__)
 
 
+SARVAM_BASE_URL = "https://api.sarvam.ai"
+SARVAM_TRANSCRIBE_PATH = "/speech-to-text"
+
+
 class SarvamAIProvider:
-    """Provider for Sarvam AI Saaras v3 transcription API."""
+    """Provider for Sarvam AI Saaras speech-to-text API."""
 
     def __init__(self, api_key: Optional[str] = None):
-        """
-        Initialize SarvamAIProvider.
-
-        Args:
-            api_key: Sarvam AI API key (defaults to SARVAMAI_API_KEY env var)
-
-        Raises:
-            ValueError: If API key is not provided
-        """
         self.api_key = api_key or os.getenv("SARVAMAI_API_KEY")
         if not self.api_key:
             raise ValueError(
                 "Sarvam AI API key not provided. Set SARVAMAI_API_KEY environment variable."
             )
-
-        self.base_url = "https://api.sarvam.ai"
-        self.timeout = 300.0  # 5 minutes timeout for long transcriptions
+        self.base_url = SARVAM_BASE_URL
+        self.timeout = 300.0
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
     )
     async def transcribe(
         self,
@@ -46,140 +45,85 @@ class SarvamAIProvider:
         enable_timestamps: bool = False,
     ) -> Dict[str, Any]:
         """
-        Transcribe audio file using Sarvam AI Saaras v3 API.
-
-        Args:
-            audio_path: Path to the audio file
-            model: Model to use (default: saaras:v3)
-            language_code: Language code (default: auto for auto-detection)
-            enable_timestamps: Whether to include timestamps in output
+        Transcribe audio via POST /speech-to-text (multipart).
 
         Returns:
-            Dictionary containing transcription results with keys:
-                - transcript_text: Full transcribed text
-                - language_code: Detected language code
-                - confidence: Confidence score (if available)
-                - segments: List of timestamped segments (if enabled)
-
-        Raises:
-            FileNotFoundError: If audio file doesn't exist
-            httpx.HTTPError: If API request fails
-            RuntimeError: If transcription fails
+            {
+                "transcript_text": str,
+                "language_code": str,
+                "confidence": float | None,
+                "segments": list,
+            }
         """
         audio_file = Path(audio_path)
         if not audio_file.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
-
-        logger.info(f"Starting transcription for {audio_path} using model {model}")
-
-        # Prepare the file for upload
         if not audio_file.is_file():
             raise ValueError(f"Path is not a file: {audio_path}")
 
-        # Determine content type based on file extension
+        url = f"{self.base_url}{SARVAM_TRANSCRIBE_PATH}"
+        headers = {"api-subscription-key": self.api_key}
+        data = {"model": model, "mode": "transcribe"}
+        if language_code and language_code != "auto":
+            data["language_code"] = language_code
+        if enable_timestamps:
+            data["with_timestamps"] = "true"
+
         content_type = self._get_content_type(audio_file.suffix.lower())
 
-        # Prepare request
-        url = f"{self.base_url}/speech-to-text/transcribe"
-        headers = {
-            "api-subscription-key": self.api_key,
-        }
+        logger.info(f"Sending file to Sarvam: {audio_path}")
 
-        # Prepare form data
-        files = {
-            "file": (audio_file.name, open(audio_file, "rb"), content_type),
-        }
-        data = {
-            "model": model,
-            "mode": "transcribe",
-        }
+        with open(audio_file, "rb") as fh:
+            files = {"file": (audio_file.name, fh, content_type)}
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.post(url, headers=headers, files=files, data=data)
+            except httpx.TimeoutException as e:
+                logger.error(f"Sarvam request timed out for {audio_path}: {e}")
+                raise RuntimeError("Sarvam API request timed out") from e
+            except httpx.HTTPError as e:
+                logger.error(f"Sarvam HTTP error for {audio_path}: {e}")
+                raise
 
-        # Add language code if not auto
-        if language_code != "auto":
-            data["language_code"] = language_code
-
-        # Add timestamps option
-        if enable_timestamps:
-            data["enable_timestamps"] = "true"
+        if response.status_code != 200:
+            logger.error(
+                "Sarvam API failed status=%s body=%s",
+                response.status_code,
+                response.text,
+            )
+            raise RuntimeError(
+                f"Sarvam API failed: {response.status_code} {response.text}"
+            )
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    url,
-                    headers=headers,
-                    files=files,
-                    data=data,
-                )
-
-            # Close the file
-            files["file"][1].close()
-
-            # Check response
-            if response.status_code != 200:
-                error_msg = f"Transcription API failed with status {response.status_code}"
-                try:
-                    error_detail = response.json()
-                    error_msg += f": {error_detail}"
-                except:
-                    error_msg += f": {response.text}"
-                logger.error(error_msg)
-                raise RuntimeError(error_msg)
-
             result = response.json()
+        except ValueError as e:
+            logger.error(f"Sarvam returned non-JSON body: {response.text!r}")
+            raise RuntimeError("Sarvam API returned a non-JSON response") from e
 
-            # Parse response
-            transcript_result = {
-                "transcript_text": "",
-                "language_code": "",
-                "confidence": None,
-                "segments": [],
-            }
+        transcript_text = result.get("transcript") or result.get("transcription") or ""
+        language = result.get("language_code") or result.get("detected_language") or ""
+        confidence = result.get("language_probability")
+        if confidence is None:
+            confidence = result.get("confidence")
+        if confidence is not None:
+            try:
+                confidence = float(confidence)
+            except (TypeError, ValueError):
+                confidence = None
+        segments = result.get("segments") or []
 
-            # Extract transcript text
-            if "transcript" in result:
-                transcript_result["transcript_text"] = result["transcript"]
-            elif "transcription" in result:
-                transcript_result["transcript_text"] = result["transcription"]
+        preview = (transcript_text or "")[:100]
+        logger.info(f"Transcription successful: {preview}")
 
-            # Extract language code
-            if "language_code" in result:
-                transcript_result["language_code"] = result["language_code"]
-            elif "detected_language" in result:
-                transcript_result["language_code"] = result["detected_language"]
-
-            # Extract confidence
-            if "confidence" in result:
-                transcript_result["confidence"] = float(result["confidence"])
-
-            # Extract segments if available
-            if "segments" in result:
-                transcript_result["segments"] = result["segments"]
-
-            logger.info(f"Transcription completed for {audio_path}")
-            logger.debug(f"Transcript length: {len(transcript_result['transcript_text'])} chars")
-
-            return transcript_result
-
-        except httpx.TimeoutException:
-            logger.error(f"Transcription timeout for {audio_path}")
-            raise RuntimeError("Transcription request timed out")
-        except httpx.HTTPError as e:
-            logger.error(f"HTTP error during transcription: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error during transcription: {e}")
-            raise
+        return {
+            "transcript_text": transcript_text,
+            "language_code": language,
+            "confidence": confidence,
+            "segments": segments,
+        }
 
     def _get_content_type(self, file_extension: str) -> str:
-        """
-        Get MIME content type for file extension.
-
-        Args:
-            file_extension: File extension (with dot)
-
-        Returns:
-            MIME content type
-        """
         content_types = {
             ".wav": "audio/wav",
             ".mp3": "audio/mpeg",
@@ -192,70 +136,13 @@ class SarvamAIProvider:
         return content_types.get(file_extension, "audio/wav")
 
     async def health_check(self) -> bool:
-        """
-        Check if the Sarvam AI API is accessible.
-
-        Returns:
-            True if API is accessible, False otherwise
-        """
+        """Best-effort reachability probe."""
         try:
-            url = f"{self.base_url}/health"
-            headers = {
-                "api-subscription-key": self.api_key,
-            }
-
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(url, headers=headers)
-
-            return response.status_code == 200
-
+                response = await client.get(
+                    f"{self.base_url}/", headers={"api-subscription-key": self.api_key}
+                )
+            return response.status_code < 500
         except Exception as e:
-            logger.warning(f"Health check failed: {e}")
+            logger.warning(f"Sarvam health check failed: {e}")
             return False
-
-
-# Alternative implementation using sarvamai Python SDK
-# Uncomment this if using the official SDK
-
-# try:
-#     from sarvamai import SarvamAI
-#
-#     class SarvamAISDKProvider:
-#         """Provider using the official Sarvam AI Python SDK."""
-#
-#         def __init__(self, api_key: Optional[str] = None):
-#             self.api_key = api_key or os.getenv("SARVAMAI_API_KEY")
-#             if not self.api_key:
-#                 raise ValueError("Sarvam AI API key not provided.")
-#
-#             self.client = SarvamAI(api_subscription_key=self.api_key)
-#
-#         async def transcribe(
-#             self,
-#             audio_path: str,
-#             model: str = "saaras:v3",
-#             language_code: str = "auto",
-#         ) -> Dict[str, Any]:
-#             """Transcribe using SDK."""
-#             audio_file = Path(audio_path)
-#             if not audio_file.exists():
-#                 raise FileNotFoundError(f"Audio file not found: {audio_path}")
-#
-#             logger.info(f"Transcribing {audio_path} using SDK")
-#
-#             with open(audio_path, "rb") as f:
-#                 response = self.client.speech_to_text.transcribe(
-#                     file=f,
-#                     model=model,
-#                     mode="transcribe",
-#                 )
-#
-#             return {
-#                 "transcript_text": response.transcript,
-#                 "language_code": response.language_code,
-#                 "confidence": getattr(response, "confidence", None),
-#                 "segments": getattr(response, "segments", []),
-#             }
-#
-# except ImportError:
-#     logger.info("sarvamai SDK not available, using HTTP implementation")
