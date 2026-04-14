@@ -70,9 +70,7 @@ Dockerfile
 docker-compose.yml
 .dockerignore
 
-# Alembic (versions are needed, but we'll handle separately)
-alembic/versions/*.py
-!alembic/versions/README
+# Alembic versions are needed for migrations
 
 # Frontend (build separately)
 frontend/

@@ -7,6 +7,10 @@ import Clients from './pages/Clients';
 import Calendar from './pages/Calendar';
 import Events from './pages/Events';
 import Users from './pages/Users';
+import CreateClient from './pages/CreateClient';
+import CreateEvent from './pages/CreateEvent';
+import ClientDetail from './pages/ClientDetail';
+import EventDetail from './pages/EventDetail';
 
 // Protected Route Component
 function ProtectedRoute({ children }) {
@@ -61,8 +65,12 @@ function App() {
           >
             <Route index element={<Dashboard />} />
             <Route path="clients" element={<Clients />} />
+            <Route path="clients/new" element={<CreateClient />} />
+            <Route path="clients/:id" element={<ClientDetail />} />
             <Route path="calendar" element={<Calendar />} />
             <Route path="events" element={<Events />} />
+            <Route path="events/new" element={<CreateEvent />} />
+            <Route path="events/:id" element={<EventDetail />} />
             <Route
               path="users"
               element={

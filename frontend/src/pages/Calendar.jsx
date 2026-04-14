@@ -1,15 +1,16 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Calendar, momentLocalizer, Views } from 'react-big-calendar';
 import moment from 'moment';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
-import { intelligenceAPI } from '../services/api';
+import { eventsAPI, intelligenceAPI } from '../services/api';
 import { Check, Clock } from 'lucide-react';
 
 // Setup localizer
 const localizer = momentLocalizer(moment);
 
 export default function CalendarPage() {
+  const navigate = useNavigate();
   const [events, setEvents] = useState([]);
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -22,21 +23,63 @@ export default function CalendarPage() {
   const loadData = async () => {
     try {
       setLoading(true);
-      const response = await intelligenceAPI.tasks.list({ limit: 100 });
-      setTasks(response.data);
 
-      // Convert tasks to calendar events
-      const calendarEvents = response.data
+      // Fetch both events and tasks in parallel
+      const [eventsRes, tasksRes] = await Promise.all([
+        eventsAPI.list({ limit: 100 }),
+        intelligenceAPI.tasks.list({ limit: 100 }),
+      ]);
+
+      const fetchedEvents = eventsRes.data.events || [];
+      const fetchedTasks = tasksRes.data || [];
+      setTasks(fetchedTasks);
+
+      console.log('Fetched events:', fetchedEvents);
+      console.log('Fetched tasks:', fetchedTasks);
+
+      // Convert events to calendar format
+      const eventCalendarItems = fetchedEvents.map(event => {
+        const startDate = new Date(event.datetime);
+        const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // Add 1 hour default
+
+        const calendarEvent = {
+          id: `event-${event.id}`,
+          title: event.title,
+          start: startDate,
+          end: endDate,
+          resource: {
+            type: 'event',
+            data: event,
+          },
+        };
+
+        console.log('Converted event to calendar:', calendarEvent);
+        return calendarEvent;
+      });
+
+      // Convert pending tasks to calendar format
+      const taskCalendarItems = fetchedTasks
         .filter(task => task.status === 'pending')
-        .map(task => ({
-          id: task.id,
-          title: task.deadline_description,
-          start: new Date(task.deadline_due_date),
-          end: new Date(new Date(task.deadline_due_date).setHours(23, 59, 59)),
-          resource: task,
-        }));
+        .map(task => {
+          const startDate = new Date(task.deadline_due_date);
+          const endDate = new Date(new Date(task.deadline_due_date).setHours(23, 59, 59));
 
-      setEvents(calendarEvents);
+          return {
+            id: `task-${task.id}`,
+            title: `Deadline: ${task.deadline_description}`,
+            start: startDate,
+            end: endDate,
+            resource: {
+              type: 'task',
+              data: task,
+            },
+          };
+        });
+
+      const allCalendarEvents = [...eventCalendarItems, ...taskCalendarItems];
+      console.log('All calendar events:', allCalendarEvents);
+
+      setEvents(allCalendarEvents);
     } catch (error) {
       console.error('Error loading calendar data:', error);
     } finally {
@@ -44,10 +87,19 @@ export default function CalendarPage() {
     }
   };
 
-  const handleSelectEvent = useCallback((event) => {
-    // Navigate to event details
-    window.location.href = `/events/${event.resource.event_id}`;
-  }, []);
+  const handleSelectEvent = useCallback((calendarEvent) => {
+    console.log('Selected calendar event:', calendarEvent);
+
+    // Navigate based on resource type
+    if (calendarEvent.resource?.type === 'event') {
+      navigate(`/events/${calendarEvent.resource.data.id}`);
+    } else if (calendarEvent.resource?.type === 'task') {
+      navigate(`/events/${calendarEvent.resource.data.event_id}`);
+    } else {
+      // Fallback for tasks (old format)
+      navigate(`/events/${calendarEvent.resource.event_id}`);
+    }
+  }, [navigate]);
 
   const handleToggleTaskStatus = async (task) => {
     try {
@@ -60,19 +112,31 @@ export default function CalendarPage() {
     }
   };
 
-  const CustomEvent = ({ event }) => (
-    <div className="text-xs">
-      <div className="font-medium truncate">{event.title}</div>
-      <div className="flex items-center mt-1">
-        {event.resource.status === 'completed' ? (
-          <Check className="w-3 h-3 mr-1 text-green-600" />
-        ) : (
-          <Clock className="w-3 h-3 mr-1 text-yellow-600" />
+  const CustomEvent = ({ event }) => {
+    const isTask = event.resource?.type === 'task';
+    const isCompleted = isTask && event.resource?.data?.status === 'completed';
+
+    return (
+      <div className="text-xs">
+        <div className="font-medium truncate">{event.title}</div>
+        {!isTask && (
+          <div className="mt-1 text-xs text-gray-400 capitalize">
+            {event.resource?.data?.type || 'event'}
+          </div>
         )}
-        <span className="capitalize">{event.resource.status}</span>
+        {isTask && (
+          <div className="flex items-center mt-1">
+            {isCompleted ? (
+              <Check className="w-3 h-3 mr-1 text-green-600" />
+            ) : (
+              <Clock className="w-3 h-3 mr-1 text-yellow-600" />
+            )}
+            <span className="capitalize">{event.resource?.data?.status || 'pending'}</span>
+          </div>
+        )}
       </div>
-    </div>
-  );
+    );
+  };
 
   if (loading) {
     return (
@@ -107,11 +171,18 @@ export default function CalendarPage() {
             components={{
               event: CustomEvent,
             }}
-            eventPropGetter={(event) => ({
-              className: event.resource.status === 'completed'
-                ? 'bg-green-500'
-                : 'bg-primary-500',
-            })}
+            eventPropGetter={(event) => {
+              const isTask = event.resource?.type === 'task';
+              const isCompleted = isTask && event.resource?.data?.status === 'completed';
+
+              return {
+                className: isCompleted
+                  ? 'bg-green-500'
+                  : isTask
+                  ? 'bg-yellow-500'
+                  : 'bg-primary-500',
+              };
+            }}
             style={{
               height: '100%',
             }}

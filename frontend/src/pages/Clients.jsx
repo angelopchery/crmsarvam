@@ -112,6 +112,7 @@ export default function Clients() {
                 <button
                   onClick={() => handleDelete(client.id)}
                   className="p-2 text-gray-400 hover:text-red-600 transition-colors"
+                  title="Delete Client"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>
